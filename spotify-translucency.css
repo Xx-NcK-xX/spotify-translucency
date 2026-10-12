@@ -1,0 +1,50 @@
+/* spotify-translucency: remove Spotify's album-art colouring so the
+   window-level translucency reads as one flat colour.
+   Built against Spotify 1.2.95. The hashed class names (.ljaAbgp9... etc.)
+   can change between Spotify versions; the attribute selectors are generic. */
+
+/* ---- 1. Neutralise extracted album colours ----
+   Spotify writes the palette it extracts from cover art into inline CSS
+   variables on wrapper elements. Force them back to the stock dark theme so
+   every gradient and tint that reads them goes neutral. */
+[style*="--background-base"],
+[style*="--background-tinted"],
+[style*="--text-subdued"] {
+  --background-base: #121212 !important;
+  --background-base-min-contrast: #121212 !important;
+  --background-base-70: transparent !important;
+  --background-highlight: #1f1f1f !important;
+  --background-press: #000 !important;
+  --background-elevated-base: #1f1f1f !important;
+  --background-elevated-highlight: #2a2a2a !important;
+  --background-elevated-press: #191919 !important;
+  --background-tinted-base: #ffffff1a !important;
+  --background-tinted-highlight: #ffffff24 !important;
+  --background-tinted-press: #ffffff36 !important;
+  --text-base: #fff !important;
+  --text-subdued: #b3b3b3 !important;
+  --text-bright-accent: #1ed760 !important;
+  --essential-base: #fff !important;
+  --essential-subdued: #7c7c7c !important;
+  --essential-bright-accent: #1ed760 !important;
+  --decorative-base: #fff !important;
+  --decorative-subdued: #292929 !important;
+}
+
+/* ---- 2. Flatten the remaining gradients and noise ---- */
+:root, .encore-dark-theme { --background-noise: none !important; }
+
+/* Per-page header colour (inline background-color taken from the cover art) */
+#main-view [style*="background-color"],
+#Desktop_PanelContainer_Id [style*="background-color"] {
+  background-color: transparent !important;
+}
+
+/* Gradient overlays on page headers and side-panel sections */
+#main-view .ljaAbgp9aszmdTGe,
+#main-view .Ne2ZT1jAZDkjpgsF,
+#main-view .jPP351nft5MI4inH,
+#main-view .Emh6sVCoQHM3KQ4_,
+#main-view .WqX0xAKGPd8kxMke { background: none !important; }
+#main-view .AGRpGUcmqIgVZ5Nh { background-color: transparent !important; }
+.X8eqXqMjKs8yMGVw::before { background: none !important; }
