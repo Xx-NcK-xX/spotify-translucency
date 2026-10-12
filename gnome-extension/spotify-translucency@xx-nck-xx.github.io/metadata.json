@@ -1,0 +1,8 @@
+{
+  "uuid": "spotify-translucency@xx-nck-xx.github.io",
+  "name": "Spotify Translucency",
+  "description": "Makes the Spotify window translucent on every monitor, including when it is maximized or fullscreen. Opacity is read from ~/.config/spotify-translucency/config (OPACITY=79) and applies live.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/Xx-NcK-xX/spotify-translucency",
+  "version": 2
+}

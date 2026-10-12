@@ -3,6 +3,9 @@
 #
 #   ./install.sh                 install / repair (uses saved opacity, default 79)
 #   ./install.sh --opacity 70    set window opacity in percent (saved for next time)
+#   ./install.sh --font "Name"   use an installed font (saved for next time)
+#   ./install.sh --font my.ttf   embed a font file: .ttf .otf .woff .woff2 (saved)
+#   ./install.sh --font none     go back to Spotify's own font
 #   ./install.sh --uninstall     restore the original Spotify files and settings
 #
 # Two parts:
@@ -10,7 +13,7 @@
 #      which removes the album-art tint/gradients so the window is one flat colour.
 #   2. Makes the window itself translucent. Spotify's CEF window cannot be
 #      transparent from CSS, so this uses the desktop's compositor:
-#      GNOME -> Blur My Shell extension, KDE Plasma -> KWin window rule,
+#      GNOME -> bundled Spotify Translucency extension, KDE -> KWin window rule,
 #      others -> printed instructions. macOS has no supported way (see README).
 set -euo pipefail
 
@@ -18,6 +21,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CSS_SRC="$HERE/spotify-translucency.css"
 CSS_NAME="spotify-translucency.css"
 LINK="<link href=\"/$CSS_NAME\" rel=\"stylesheet\">"
+FONT_FAMILY_CUSTOM="SpotifyTranslucencyCustomFont"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/spotify-translucency"
 CONFIG="$CONFIG_DIR/config"
 DEFAULT_OPACITY=79
@@ -28,17 +32,20 @@ warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
 # ---------------------------------------------------------------- arguments
 ACTION=install
 OPACITY=""
+FONT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o|--opacity)  [ $# -ge 2 ] || die "$1 needs a value"; OPACITY=$2; shift 2 ;;
     --opacity=*)   OPACITY=${1#*=}; shift ;;
+    -f|--font)     [ $# -ge 2 ] || die "$1 needs a value"; FONT=$2; shift 2 ;;
+    --font=*)      FONT=${1#*=}; shift ;;
     -u|--uninstall) ACTION=uninstall; shift ;;
     -h|--help)     usage 0 ;;
     *)             warn "unknown option: $1"; usage 1 ;;
@@ -49,12 +56,38 @@ saved_opacity() {
   [ -f "$CONFIG" ] && sed -n 's/^OPACITY=\([0-9][0-9]*\)$/\1/p' "$CONFIG" | head -n1
 }
 
+saved_font() {
+  [ -f "$CONFIG" ] && sed -n 's/^FONT=//p' "$CONFIG" | head -n1
+}
+
 if [ -z "$OPACITY" ]; then
   OPACITY=$(saved_opacity || true)
   OPACITY=${OPACITY:-$DEFAULT_OPACITY}
 fi
 case "$OPACITY" in ''|*[!0-9]*) die "opacity must be a whole number from 10 to 100" ;; esac
 [ "$OPACITY" -ge 10 ] && [ "$OPACITY" -le 100 ] || die "opacity must be from 10 to 100 (got $OPACITY)"
+
+# Font: empty = keep saved choice; "none" = Spotify's font; a file = embed it;
+# anything else = the name of an installed font family.
+FONT_FILE=""      # path of a font file to embed (stored in CONFIG_DIR)
+FONT_FAMILY=""    # CSS family name to use
+if [ -z "$FONT" ]; then FONT=$(saved_font || true); fi
+case "$FONT" in
+  ""|none|NONE|default) FONT="" ;;
+  *.ttf|*.otf|*.woff|*.woff2|*.TTF|*.OTF|*.WOFF|*.WOFF2)
+    [ -f "$FONT" ] || die "font file not found: $FONT"
+    ext=$(printf '%s' "${FONT##*.}" | tr 'A-Z' 'a-z')
+    stored="$CONFIG_DIR/custom-font.$ext"
+    if [ "$(cd "$(dirname "$FONT")" && pwd)/$(basename "$FONT")" != "$stored" ]; then
+      mkdir -p "$CONFIG_DIR"
+      rm -f "$CONFIG_DIR"/custom-font.*
+      cp "$FONT" "$stored"
+    fi
+    FONT=$stored FONT_FILE=$stored FONT_FAMILY=$FONT_FAMILY_CUSTOM ;;
+  *)
+    case "$FONT" in *[!A-Za-z0-9\ _.-]*) die "font name may only contain letters, numbers, spaces, _ . -" ;; esac
+    FONT_FAMILY=$FONT ;;
+esac
 
 # ---------------------------------------------------------- locate Spotify
 find_spa() {
@@ -98,9 +131,37 @@ spa_cat() {
 
 is_patched() { spa_cat "$1" index.html | grep -q "$CSS_NAME"; }
 
-# build_patched SRC DST: write a copy of SRC with our CSS added and linked.
+font_member() { [ -n "$FONT_FILE" ] && echo "spotify-translucency-font.${FONT_FILE##*.}"; }
+
+font_format() {
+  case "${FONT_FILE##*.}" in
+    ttf) echo truetype ;; otf) echo opentype ;; woff) echo woff ;; woff2) echo woff2 ;;
+  esac
+}
+
+# make_css OUT: the stylesheet to ship, plus the font section when --font is set.
+make_css() {
+  cp "$CSS_SRC" "$1"
+  [ -n "$FONT_FAMILY" ] || return 0
+  {
+    echo
+    echo "/* ---- 3. Font (install.sh --font) ---- */"
+    if [ -n "$FONT_FILE" ]; then
+      echo "@font-face { font-family: \"$FONT_FAMILY\"; src: url(\"/$(font_member)\") format(\"$(font_format)\"); }"
+    fi
+    echo ":root, .encore-dark-theme, .encore-layout-themes {"
+    for v in body title variable; do
+      echo "  --encore-$v-font-stack: \"$FONT_FAMILY\", sans-serif !important;"
+    done
+    echo "  --encore-bodyMono-font-stack: \"$FONT_FAMILY\", monospace !important;"
+    echo "}"
+    echo "html, body, body *:not(svg):not(svg *) { font-family: \"$FONT_FAMILY\", sans-serif !important; }"
+  } >> "$1"
+}
+
+# build_patched SRC DST CSS: write a copy of SRC with CSS (and any font) added and linked.
 build_patched() {
-  local src=$1 dst=$2
+  local src=$1 dst=$2 css=$3 fm; fm=$(font_member || true)
   if command -v zip >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then
     local w; w=$(mktemp -d)
     cp "$src" "$w/xpui.spa"
@@ -109,17 +170,23 @@ build_patched() {
     if ! grep -q "$CSS_NAME" "$w/index.html"; then
       sed "s#</head>#$LINK</head>#" "$w/index.html" > "$w/index.new" && mv "$w/index.new" "$w/index.html"
     fi
-    cp "$CSS_SRC" "$w/$CSS_NAME"
-    (cd "$w" && zip -q xpui.spa index.html "$CSS_NAME")
+    cp "$css" "$w/$CSS_NAME"
+    zip -q -d "$w/xpui.spa" 'spotify-translucency-font.*' >/dev/null 2>&1 || true
+    if [ -n "$fm" ]; then
+      cp "$FONT_FILE" "$w/$fm"
+      (cd "$w" && zip -q xpui.spa index.html "$CSS_NAME" "$fm")
+    else
+      (cd "$w" && zip -q xpui.spa index.html "$CSS_NAME")
+    fi
     cp "$w/xpui.spa" "$dst"
     rm -rf "$w"
   elif command -v python3 >/dev/null 2>&1; then
-    python3 -I - "$src" "$dst" "$CSS_SRC" "$CSS_NAME" "$LINK" <<'PY'
+    python3 -I - "$src" "$dst" "$css" "$CSS_NAME" "$LINK" "$FONT_FILE" "$fm" <<'PY'
 import sys, zipfile
-src, dst, css_path, css_name, link = sys.argv[1:6]
+src, dst, css_path, css_name, link, font_path, font_member = sys.argv[1:8]
 with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
     for item in zin.infolist():
-        if item.filename == css_name:
+        if item.filename == css_name or item.filename.startswith("spotify-translucency-font."):
             continue
         data = zin.read(item.filename)
         if item.filename == "index.html":
@@ -132,6 +199,9 @@ with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED
         zout.writestr(item, data)
     with open(css_path, "rb") as f:
         zout.writestr(css_name, f.read())
+    if font_member:
+        with open(font_path, "rb") as f:
+            zout.writestr(font_member, f.read())
 PY
   else
     die "need either zip+unzip or python3 to patch Spotify"
@@ -174,9 +244,13 @@ start_spotify() {
 
 # --------------------------------------------------- patch / unpatch
 patch_spotify() {
-  local bak="$SPA.translucency-backup" src="$SPA" tmp
-  if is_patched "$SPA" && spa_cat "$SPA" "$CSS_NAME" | cmp -s - "$CSS_SRC"; then
+  local bak="$SPA.translucency-backup" src="$SPA" tmp css
+  css=$(mktemp)
+  make_css "$css"
+  if is_patched "$SPA" && spa_cat "$SPA" "$CSS_NAME" | cmp -s - "$css" &&
+     { [ -z "$FONT_FILE" ] || spa_cat "$SPA" "$(font_member)" | cmp -s - "$FONT_FILE"; }; then
     info "Spotify UI already patched with the current stylesheet"
+    rm -f "$css"
     return
   fi
   if is_patched "$SPA"; then
@@ -188,10 +262,10 @@ patch_spotify() {
     as_root cp "$SPA" "$bak"
   fi
   tmp=$(mktemp)
-  build_patched "$src" "$tmp"
+  build_patched "$src" "$tmp" "$css"
   stop_spotify
   as_root cp "$tmp" "$SPA"
-  rm -f "$tmp"
+  rm -f "$tmp" "$css"
   info "Patched $SPA"
 }
 
@@ -228,39 +302,60 @@ bms_available() {
   return 1
 }
 
-gnome_apply() {
-  if ! bms_available; then
-    warn "GNOME needs the 'Blur my Shell' extension to make windows translucent."
-    echo "    Install it from https://extensions.gnome.org/extension/3193/blur-my-shell/"
-    echo "    (or: sudo apt install gnome-shell-extension-blur-my-shell), log out and"
-    echo "    back in, then run this script again."
-    return
-  fi
-  mkdir -p "$CONFIG_DIR"
-  [ -f "$CONFIG_DIR/gnome-before.txt" ] || bms list-recursively "$BMS_KEY" > "$CONFIG_DIR/gnome-before.txt"
+EXT_UUID=spotify-translucency@xx-nck-xx.github.io
+EXT_SRC="$HERE/gnome-extension/$EXT_UUID"
+EXT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$EXT_UUID"
 
-  local wl
-  wl=$(bms get "$BMS_KEY" whitelist)
-  if [[ "$wl" != *"'Spotify'"* ]]; then
-    case "$wl" in
-      "@as []"|"[]") wl="['Spotify', 'spotify']" ;;
-      *)             wl="${wl%]}, 'Spotify', 'spotify']" ;;
-    esac
-    bms set "$BMS_KEY" whitelist "$wl"
+# Returns 0 if the extension is running now, 1 if it starts at next login.
+ext_enable() {
+  gnome-extensions enable "$EXT_UUID" >/dev/null 2>&1 && return 0
+  # GNOME on Wayland only discovers new extensions at login, so mark it as
+  # enabled in settings and it starts at the next login.
+  local list; list=$(gsettings get org.gnome.shell enabled-extensions)
+  case "$list" in *"'$EXT_UUID'"*) return 1 ;; esac
+  case "$list" in
+    "@as []"|"[]") list="['$EXT_UUID']" ;;
+    *)             list="${list%]}, '$EXT_UUID']" ;;
+  esac
+  gsettings set org.gnome.shell enabled-extensions "$list"
+  return 1
+}
+
+gnome_apply() {
+  [ -d "$EXT_SRC" ] || die "missing $EXT_SRC (keep install.sh next to the gnome-extension folder)"
+  mkdir -p "$(dirname "$EXT_DIR")"
+  rm -rf "$EXT_DIR"
+  cp -r "$EXT_SRC" "$EXT_DIR"
+  bms_revert
+  if [ "$(gsettings get org.gnome.shell disable-user-extensions 2>/dev/null)" = true ]; then
+    warn "GNOME user extensions are switched off; turn them on in the Extensions app."
   fi
-  bms set "$BMS_KEY" opacity $(( (OPACITY * 255 + 50) / 100 ))
-  bms set "$BMS_KEY" dynamic-opacity false
-  bms set "$BMS_KEY" customize true
-  bms set "$BMS_KEY" sigma 0
-  bms set "$BMS_KEY" blur true
-  gnome-extensions enable "$BMS_UUID" >/dev/null 2>&1 || true
-  if [ "$(bms get "$BMS_KEY" enable-all)" = true ]; then
-    warn "Blur my Shell 'blur all applications' is on, so this opacity applies to every window."
+  if ext_enable; then
+    info "GNOME: Spotify window opacity set to $OPACITY% (Spotify Translucency extension)"
+  else
+    info "GNOME: installed the Spotify Translucency extension (opacity $OPACITY%)"
+    warn "Log out and back in once to start it. After that, opacity changes apply instantly."
   fi
-  info "GNOME: Spotify window opacity set to $OPACITY% via Blur my Shell"
 }
 
 gnome_revert() {
+  if ! gnome-extensions disable "$EXT_UUID" >/dev/null 2>&1; then
+    local list; list=$(gsettings get org.gnome.shell enabled-extensions 2>/dev/null || true)
+    case "$list" in
+      *"'$EXT_UUID'"*)
+        list=$(printf '%s' "$list" | sed "s/, '$EXT_UUID'//; s/'$EXT_UUID', //; s/'$EXT_UUID'//")
+        gsettings set org.gnome.shell enabled-extensions "$list" ;;
+    esac
+  fi
+  if [ -d "$EXT_DIR" ]; then
+    rm -rf "$EXT_DIR"
+    info "GNOME: removed the Spotify Translucency extension"
+  fi
+  bms_revert
+}
+
+# v1 used Blur my Shell for the opacity; put the user's settings back.
+bms_revert() {
   local before="$CONFIG_DIR/gnome-before.txt" schema key value
   [ -f "$before" ] || return 0
   bms_available || return 0
@@ -268,7 +363,7 @@ gnome_revert() {
     bms set "$schema" "$key" "$value" || true
   done < "$before"
   rm -f "$before"
-  info "GNOME: restored previous Blur my Shell settings"
+  info "GNOME: restored your previous Blur my Shell settings"
 }
 
 # ----------------------------------------------- window opacity: KDE
@@ -365,7 +460,7 @@ info "Found Spotify UI bundle: $SPA"
 if [ "$ACTION" = uninstall ]; then
   unpatch_spotify
   window_revert
-  rm -f "$CONFIG"
+  rm -f "$CONFIG" "$CONFIG_DIR"/custom-font.*
   start_spotify
   info "Uninstalled."
   exit 0
@@ -374,7 +469,7 @@ fi
 patch_spotify
 window_apply
 mkdir -p "$CONFIG_DIR"
-printf 'OPACITY=%s\n' "$OPACITY" > "$CONFIG"
-info "Saved opacity $OPACITY% to $CONFIG"
+printf 'OPACITY=%s\nFONT=%s\n' "$OPACITY" "$FONT" > "$CONFIG"
+info "Saved opacity $OPACITY%${FONT:+ and font '$FONT'} to $CONFIG"
 start_spotify
 info "Done. Re-run this script after Spotify updates to re-apply the patch."
