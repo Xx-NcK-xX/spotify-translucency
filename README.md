@@ -5,7 +5,7 @@ removes the album-art colour tint so the whole window is one flat colour.
 
 ![Spotify with a translucent window and no album colour](assets/screenshot.png)
 
-![Demo](assets/demo.gif)
+![Demo](assets/demo-v2.gif)
 
 <sub>The screenshots also use a custom system font (JetBrainsMono), which
 these scripts don't change.</sub>
